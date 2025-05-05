@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 var altchaHMACKey = getEnv("ALTCHA_HMAC_KEY", "MY_ALTCHA_HMAC_KEY")
 var serverPort = getEnv("PORT", "3000")
+var expireTimeInMins, err = strconv.Atoi(getEnv("EXPIRE_TIME_IN_MINS", "5"))
 
 // In-memory cache for preventing replay attacks
 var (
@@ -54,9 +56,12 @@ func challengeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	expiresAt := time.Now().Add(time.Duration(expireTimeInMins) * time.Minute)
+
 	challenge, err := altcha.CreateChallenge(altcha.ChallengeOptions{
 		HMACKey:   altchaHMACKey,
 		MaxNumber: 50000,
+		Expires:   &expiresAt,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create challenge: %s", err), http.StatusInternalServerError)
