@@ -1,7 +1,8 @@
 services:
-  captcha:
+  altcha-lite:
     container_name: altcha-lite
     image: xhunt3rx/altcha-lite
+    restart: always
     build: .
     ports:
       - "3000:3000"
