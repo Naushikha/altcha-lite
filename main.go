@@ -18,7 +18,14 @@ import (
 
 var altchaHMACKey = getEnv("ALTCHA_HMAC_KEY", "MY_ALTCHA_HMAC_KEY")
 var serverPort = getEnv("PORT", "3000")
-var expireTimeInMins, err = strconv.Atoi(getEnv("EXPIRE_TIME_IN_MINS", "5"))
+var expireTimeInMins = func() int {
+	val, err := strconv.Atoi(getEnv("EXPIRE_TIME_IN_MINS", "5"))
+	if err != nil {
+		log.Printf("Invalid EXPIRE_TIME_IN_MINS value, falling back to 5")
+		return 5
+	}
+	return val
+}()
 
 // In-memory cache for preventing replay attacks
 var (
