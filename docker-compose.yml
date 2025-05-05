@@ -1,0 +1,9 @@
+services:
+  captcha:
+    container_name: altcha-lite
+    image: xhunt3rx/altcha-lite
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - ALTCHA_HMAC_KEY=MY_ALTCHA_HMAC_KEY
