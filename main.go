@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -26,6 +27,16 @@ var (
 type cachedSolution struct {
 	expiresAt time.Time
 }
+
+type healthPayload struct {
+	Status        string `json:"status"`
+	UptimeSeconds int64  `json:"uptimeSeconds"`
+	MemAllocMB    uint64 `json:"memAllocMB"`
+	MemSysMB      uint64 `json:"memSysMB"`
+	NumGoroutine  int    `json:"goroutines"`
+}
+
+var startTime = time.Now()
 
 var (
 	usedSolutions = make(map[string]cachedSolution)
@@ -48,7 +59,20 @@ func main() {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "ok"})
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	uptime := time.Since(startTime).Seconds()
+
+	payload := healthPayload{
+		Status:        "ok",
+		UptimeSeconds: int64(uptime),
+		MemAllocMB:    m.Alloc / 1024 / 1024, // Convert bytes to MB
+		MemSysMB:      m.Sys / 1024 / 1024,   // Convert bytes to MB
+		NumGoroutine:  runtime.NumGoroutine(),
+	}
+
+	writeJSON(w, payload)
 }
 
 func challengeHandler(w http.ResponseWriter, r *http.Request) {
