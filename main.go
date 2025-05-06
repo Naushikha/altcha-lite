@@ -111,7 +111,7 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	if entry, found := usedSolutions[payload]; found {
 		if time.Now().Before(entry.expiresAt) {
 			cacheMutex.Unlock()
-			http.Error(w, "Replay detected: CAPTCHA already used", http.StatusForbidden)
+			writeError(w, "Replay detected: CAPTCHA already used")
 			return
 		}
 	}
@@ -121,10 +121,11 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !verified {
 		if err != nil {
 			log.Printf("Altcha verification error: %v", err)
+			writeError(w, "Verification error: "+err.Error())
 		} else {
 			log.Println("Altcha verification failed: token is invalid or expired")
+			writeError(w, "Invalid or expired Altcha token")
 		}
-		http.Error(w, "Invalid Altcha payload", http.StatusBadRequest)
 		return
 	}
 
@@ -221,4 +222,12 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		http.Error(w, "Failed to encode JSON", http.StatusInternalServerError)
 	}
+}
+
+func writeError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": false,
+		"message": message,
+	})
 }
