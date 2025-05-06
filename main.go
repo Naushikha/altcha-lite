@@ -2,7 +2,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -85,43 +84,35 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	formData := r.FormValue("altcha")
-	if formData == "" {
+	payload := r.FormValue("altcha")
+	if payload == "" {
 		http.Error(w, "Altcha payload missing", http.StatusBadRequest)
 		return
 	}
 
 	// Check replay cache
 	cacheMutex.Lock()
-	if _, found := usedSolutions[formData]; found {
+	if _, found := usedSolutions[payload]; found {
 		cacheMutex.Unlock()
 		http.Error(w, "Replay detected: CAPTCHA already used", http.StatusForbidden)
 		return
 	}
 	cacheMutex.Unlock()
 
-	// Decode and verify
-	decodedPayload, err := base64.StdEncoding.DecodeString(formData)
-	if err != nil {
-		http.Error(w, "Failed to decode Altcha payload", http.StatusBadRequest)
-		return
-	}
-
-	var payload map[string]interface{}
-	if err := json.Unmarshal(decodedPayload, &payload); err != nil {
-		http.Error(w, "Failed to parse Altcha payload", http.StatusBadRequest)
-		return
-	}
-
 	verified, err := altcha.VerifySolution(payload, altchaHMACKey, true)
 	if err != nil || !verified {
+		if err != nil {
+			log.Printf("Altcha verification error: %v", err)
+		} else {
+			log.Println("Altcha verification failed: token is invalid or expired")
+		}
 		http.Error(w, "Invalid Altcha payload", http.StatusBadRequest)
 		return
 	}
 
 	// Add to cache
 	cacheMutex.Lock()
-	usedSolutions[formData] = time.Now()
+	usedSolutions[payload] = time.Now()
 	cacheMutex.Unlock()
 
 	writeJSON(w, map[string]interface{}{
