@@ -15,22 +15,21 @@ import (
 	"github.com/altcha-org/altcha-lib-go"
 )
 
-var altchaHMACKey = getEnv("ALTCHA_HMAC_KEY", "MY_ALTCHA_HMAC_KEY")
-var serverPort = getEnv("PORT", "3000")
-var expireTimeInMins = func() int {
-	val, err := strconv.Atoi(getEnv("EXPIRE_TIME_IN_MINS", "5"))
-	if err != nil {
-		log.Printf("Invalid EXPIRE_TIME_IN_MINS value, falling back to 5")
-		return 5
-	}
-	return val
-}()
-
-// In-memory cache for preventing replay attacks
 var (
-	usedSolutions = make(map[string]time.Time)
+	altchaHMACKey       = getEnv("ALTCHA_HMAC_KEY", "MY_ALTCHA_HMAC_KEY")
+	serverPort          = getEnv("PORT", "3000")
+	expireTimeInMins    = getEnvAsInt("EXPIRE_TIME_IN_MINS", 5)
+	cacheCleanupMinutes = getEnvAsInt("CACHE_CLEAN_INTERVAL_MINS", 15)
+)
+
+// Struct to store solution metadata
+type cachedSolution struct {
+	expiresAt time.Time
+}
+
+var (
+	usedSolutions = make(map[string]cachedSolution)
 	cacheMutex    = sync.Mutex{}
-	cacheTTL      = 3 * time.Hour
 )
 
 func main() {
@@ -41,21 +40,17 @@ func main() {
 	mux.HandleFunc("/challenge", challengeHandler)
 	mux.HandleFunc("/verify", verifyHandler)
 
-	fmt.Printf("ALTCHA server is running on port %s\n", serverPort)
+	log.Printf("ALTCHA server is up and running on port %s\n", serverPort)
 	handler := loggingMiddleware(corsMiddleware(mux))
 	if err := http.ListenAndServe(":"+serverPort, handler); err != nil {
 		log.Fatal(err)
 	}
 }
 
-// /health endpoint
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{
-		"status": "ok",
-	})
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
-// /challenge endpoint
 func challengeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -63,7 +58,6 @@ func challengeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	expiresAt := time.Now().Add(time.Duration(expireTimeInMins) * time.Minute)
-
 	challenge, err := altcha.CreateChallenge(altcha.ChallengeOptions{
 		HMACKey:   altchaHMACKey,
 		MaxNumber: 50000,
@@ -77,7 +71,6 @@ func challengeHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, challenge)
 }
 
-// /verify endpoint
 func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -90,12 +83,13 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check replay cache
 	cacheMutex.Lock()
-	if _, found := usedSolutions[payload]; found {
-		cacheMutex.Unlock()
-		http.Error(w, "Replay detected: CAPTCHA already used", http.StatusForbidden)
-		return
+	if entry, found := usedSolutions[payload]; found {
+		if time.Now().Before(entry.expiresAt) {
+			cacheMutex.Unlock()
+			http.Error(w, "Replay detected: CAPTCHA already used", http.StatusForbidden)
+			return
+		}
 	}
 	cacheMutex.Unlock()
 
@@ -110,30 +104,39 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add to cache
+	// Add to cache with expiresAt
 	cacheMutex.Lock()
-	usedSolutions[payload] = time.Now()
+	usedSolutions[payload] = cachedSolution{
+		expiresAt: time.Now().Add(time.Duration(expireTimeInMins) * time.Minute),
+	}
 	cacheMutex.Unlock()
 
-	writeJSON(w, map[string]interface{}{
-		"success": true,
-	})
+	writeJSON(w, map[string]bool{"success": true})
 }
 
-// Clean up old entries from cache every 15 minutes
+// Clean up expired entries from cache
 func startCacheCleaner() {
-	ticker := time.NewTicker(15 * time.Minute)
+	ticker := time.NewTicker(time.Duration(cacheCleanupMinutes) * time.Minute)
 	for range ticker.C {
+		now := time.Now()
+		log.Println("Cache cleaner started")
+		removed := 0
+
 		cacheMutex.Lock()
-		for k, t := range usedSolutions {
-			if time.Since(t) > cacheTTL {
-				delete(usedSolutions, k)
+		for key, entry := range usedSolutions {
+			if entry.expiresAt.Before(now) {
+				delete(usedSolutions, key)
+				removed++
 			}
 		}
+		remaining := len(usedSolutions)
 		cacheMutex.Unlock()
+
+		log.Printf("Cache cleaner finished - removed %d expired solution(s), %d remaining in cache\n", removed, remaining)
 	}
 }
 
+// Utility functions
 func getEnv(key, fallback string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
@@ -141,17 +144,24 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func getEnvAsInt(key string, fallback int) int {
+	valStr := getEnv(key, "")
+	val, err := strconv.Atoi(valStr)
+	if err != nil {
+		return fallback
+	}
+	return val
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
-
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
@@ -162,8 +172,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		// Proceed with request
 		next.ServeHTTP(w, r)
 		duration := time.Since(start)
-		log.Printf("[%s] %s %s from %s - %v",
-			start.Format(time.RFC3339),
+		log.Printf("%s %s from %s - %v",
 			r.Method,
 			r.URL.Path,
 			getRealIP(r),

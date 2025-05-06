@@ -8,3 +8,5 @@ services:
       - "3000:3000"
     environment:
       - ALTCHA_HMAC_KEY=MY_ALTCHA_HMAC_KEY
+      - EXPIRE_TIME_IN_MINS=5
+      - CACHE_CLEAN_INTERVAL_MINS=15
