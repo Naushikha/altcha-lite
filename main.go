@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/altcha-org/altcha-lib-go"
@@ -34,9 +35,11 @@ type healthPayload struct {
 	MemAllocMB    uint64 `json:"memAllocMB"`
 	MemSysMB      uint64 `json:"memSysMB"`
 	NumGoroutine  int    `json:"goroutines"`
+	Cache         int64  `json:"cacheUsage"`
 }
 
 var startTime = time.Now()
+var cacheCount int64
 
 var (
 	usedSolutions = make(map[string]cachedSolution)
@@ -70,6 +73,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		MemAllocMB:    m.Alloc / 1024 / 1024, // Convert bytes to MB
 		MemSysMB:      m.Sys / 1024 / 1024,   // Convert bytes to MB
 		NumGoroutine:  runtime.NumGoroutine(),
+		Cache:         atomic.LoadInt64(&cacheCount),
 	}
 
 	writeJSON(w, payload)
@@ -135,6 +139,7 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		expiresAt: time.Now().Add(time.Duration(expireTimeInMins) * time.Minute),
 	}
 	cacheMutex.Unlock()
+	atomic.AddInt64(&cacheCount, 1)
 
 	writeJSON(w, map[string]bool{"success": true})
 }
@@ -152,6 +157,7 @@ func startCacheCleaner() {
 			if entry.expiresAt.Before(now) {
 				delete(usedSolutions, key)
 				removed++
+				atomic.AddInt64(&cacheCount, -1)
 			}
 		}
 		remaining := len(usedSolutions)
