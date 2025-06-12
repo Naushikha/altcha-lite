@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	altchaHMACKey       = getEnv("ALTCHA_HMAC_KEY", "MY_ALTCHA_HMAC_KEY")
-	serverPort          = getEnv("PORT", "3000")
-	expireTimeInMins    = getEnvAsInt("EXPIRE_TIME_IN_MINS", 5)
-	cacheCleanupMinutes = getEnvAsInt("CACHE_CLEAN_INTERVAL_MINS", 15)
+	altchaHMACKey          = getEnv("ALTCHA_HMAC_KEY", "MY_ALTCHA_HMAC_KEY")
+	serverPort             = getEnv("PORT", "3000")
+	expireTimeInMins       = getEnvAsInt("EXPIRE_TIME_IN_MINS", 5)
+	replayDetectionEnabled = getEnvAsBool("ENABLE_REPLAY_DETECTION", false)
+	cacheCleanupMinutes    = getEnvAsInt("CACHE_CLEAN_INTERVAL_MINS", 15)
 )
 
 // Struct to store solution metadata
@@ -30,12 +31,13 @@ type cachedSolution struct {
 }
 
 type healthPayload struct {
-	Status        string `json:"status"`
-	UptimeSeconds int64  `json:"uptimeSeconds"`
-	MemAllocMB    uint64 `json:"memAllocMB"`
-	MemSysMB      uint64 `json:"memSysMB"`
-	NumGoroutine  int    `json:"goroutines"`
-	Cache         int64  `json:"cacheUsage"`
+	Status                 string `json:"status"`
+	UptimeSeconds          int64  `json:"uptimeSeconds"`
+	MemAllocMB             uint64 `json:"memAllocMB"`
+	MemSysMB               uint64 `json:"memSysMB"`
+	NumGoroutine           int    `json:"goroutines"`
+	Cache                  int64  `json:"cacheUsage"`
+	ReplayDetectionEnabled bool   `json:"replayDetectionEnabled"`
 }
 
 var startTime = time.Now()
@@ -47,7 +49,9 @@ var (
 )
 
 func main() {
-	go startCacheCleaner()
+	if replayDetectionEnabled {
+		go startCacheCleaner()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
@@ -55,6 +59,9 @@ func main() {
 	mux.HandleFunc("/verify", verifyHandler)
 
 	log.Printf("ALTCHA server is up and running on port %s\n", serverPort)
+	if !replayDetectionEnabled {
+		log.Printf("WARNING: replay detection has been disabled! You can enable it using setting ENABLE_REPLAY_DETECTION=true\n")
+	}
 	handler := loggingMiddleware(corsMiddleware(mux))
 	if err := http.ListenAndServe(":"+serverPort, handler); err != nil {
 		log.Fatal(err)
@@ -68,12 +75,13 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(startTime).Seconds()
 
 	payload := healthPayload{
-		Status:        "ok",
-		UptimeSeconds: int64(uptime),
-		MemAllocMB:    m.Alloc / 1024 / 1024, // Convert bytes to MB
-		MemSysMB:      m.Sys / 1024 / 1024,   // Convert bytes to MB
-		NumGoroutine:  runtime.NumGoroutine(),
-		Cache:         atomic.LoadInt64(&cacheCount),
+		Status:                 "ok",
+		UptimeSeconds:          int64(uptime),
+		MemAllocMB:             m.Alloc / 1024 / 1024, // Convert bytes to MB
+		MemSysMB:               m.Sys / 1024 / 1024,   // Convert bytes to MB
+		NumGoroutine:           runtime.NumGoroutine(),
+		Cache:                  atomic.LoadInt64(&cacheCount),
+		ReplayDetectionEnabled: replayDetectionEnabled,
 	}
 
 	writeJSON(w, payload)
@@ -111,15 +119,17 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheMutex.Lock()
-	if entry, found := usedSolutions[payload]; found {
-		if time.Now().Before(entry.expiresAt) {
-			cacheMutex.Unlock()
-			writeError(w, "Replay detected: CAPTCHA already used")
-			return
+	if replayDetectionEnabled {
+		cacheMutex.Lock()
+		if entry, found := usedSolutions[payload]; found {
+			if time.Now().Before(entry.expiresAt) {
+				cacheMutex.Unlock()
+				writeError(w, "Replay detected: CAPTCHA already used")
+				return
+			}
 		}
+		cacheMutex.Unlock()
 	}
-	cacheMutex.Unlock()
 
 	verified, err := altcha.VerifySolution(payload, altchaHMACKey, true)
 	if err != nil || !verified {
@@ -133,13 +143,14 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add to cache with expiresAt
-	cacheMutex.Lock()
-	usedSolutions[payload] = cachedSolution{
-		expiresAt: time.Now().Add(time.Duration(expireTimeInMins) * time.Minute),
+	if replayDetectionEnabled {
+		cacheMutex.Lock()
+		usedSolutions[payload] = cachedSolution{
+			expiresAt: time.Now().Add(time.Duration(expireTimeInMins) * time.Minute),
+		}
+		cacheMutex.Unlock()
+		atomic.AddInt64(&cacheCount, 1)
 	}
-	cacheMutex.Unlock()
-	atomic.AddInt64(&cacheCount, 1)
 
 	writeJSON(w, map[string]bool{"success": true})
 }
@@ -178,6 +189,15 @@ func getEnv(key, fallback string) string {
 func getEnvAsInt(key string, fallback int) int {
 	valStr := getEnv(key, "")
 	val, err := strconv.Atoi(valStr)
+	if err != nil {
+		return fallback
+	}
+	return val
+}
+
+func getEnvAsBool(key string, fallback bool) bool {
+	valStr := getEnv(key, "")
+	val, err := strconv.ParseBool(valStr)
 	if err != nil {
 		return fallback
 	}
