@@ -10,11 +10,11 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/altcha-org/altcha-lib-go"
+	"github.com/dgraph-io/ristretto/v2"
 )
 
 var (
@@ -22,13 +22,8 @@ var (
 	serverPort             = getEnv("PORT", "3000")
 	expireTimeInMins       = getEnvAsInt("EXPIRE_TIME_IN_MINS", 5)
 	replayDetectionEnabled = getEnvAsBool("ENABLE_REPLAY_DETECTION", false)
-	cacheCleanupMinutes    = getEnvAsInt("CACHE_CLEAN_INTERVAL_MINS", 15)
+	allowedOrigins         = getEnv("ALLOWED_ORIGINS", "*")
 )
-
-// Struct to store solution metadata
-type cachedSolution struct {
-	expiresAt time.Time
-}
 
 type healthPayload struct {
 	Status                 string `json:"status"`
@@ -41,16 +36,26 @@ type healthPayload struct {
 }
 
 var startTime = time.Now()
-var cacheCount int64
+var cacheCount int64 = 0
 
-var (
-	usedSolutions = make(map[string]cachedSolution)
-	cacheMutex    = sync.Mutex{}
-)
+var usedSolutions *ristretto.Cache[string, time.Time]
 
 func main() {
 	if replayDetectionEnabled {
-		go startCacheCleaner()
+		var err error
+		usedSolutions, err = ristretto.NewCache(&ristretto.Config[string, time.Time]{
+			NumCounters: 1e6,     // number of keys to track frequency of (1M)
+			MaxCost:     1 << 30, // maximum cost of cache (1GB)
+			BufferItems: 64,      // number of keys per Get buffer
+			// Print a message when a value is evicted
+			OnEvict: func(item *ristretto.Item[time.Time]) {
+				atomic.AddInt64(&cacheCount, -1)
+				log.Printf("Evicted from cache: %v", item.Key)
+			},
+		})
+		if err != nil {
+			log.Fatalf("Failed to initialize Ristretto cache: %v", err)
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -119,16 +124,13 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if replayDetectionEnabled {
-		cacheMutex.Lock()
-		if entry, found := usedSolutions[payload]; found {
-			if time.Now().Before(entry.expiresAt) {
-				cacheMutex.Unlock()
+	if replayDetectionEnabled && usedSolutions != nil {
+		if expiresAt, found := usedSolutions.Get(payload); found {
+			if time.Now().Before(expiresAt) {
 				writeError(w, "Replay detected: CAPTCHA already used")
 				return
 			}
 		}
-		cacheMutex.Unlock()
 	}
 
 	verified, err := altcha.VerifySolution(payload, altchaHMACKey, true)
@@ -143,39 +145,14 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if replayDetectionEnabled {
-		cacheMutex.Lock()
-		usedSolutions[payload] = cachedSolution{
-			expiresAt: time.Now().Add(time.Duration(expireTimeInMins) * time.Minute),
-		}
-		cacheMutex.Unlock()
+	if replayDetectionEnabled && usedSolutions != nil {
+		expiresAt := time.Now().Add(time.Duration(expireTimeInMins) * time.Minute)
+		// SetWithTTL(key, value, cost, ttl). cost is an int64
+		usedSolutions.SetWithTTL(payload, expiresAt, int64(1), time.Duration(expireTimeInMins)*time.Minute)
 		atomic.AddInt64(&cacheCount, 1)
 	}
 
 	writeJSON(w, map[string]bool{"success": true})
-}
-
-// Clean up expired entries from cache
-func startCacheCleaner() {
-	ticker := time.NewTicker(time.Duration(cacheCleanupMinutes) * time.Minute)
-	for range ticker.C {
-		now := time.Now()
-		log.Println("Cache cleaner started")
-		removed := 0
-
-		cacheMutex.Lock()
-		for key, entry := range usedSolutions {
-			if entry.expiresAt.Before(now) {
-				delete(usedSolutions, key)
-				removed++
-				atomic.AddInt64(&cacheCount, -1)
-			}
-		}
-		remaining := len(usedSolutions)
-		cacheMutex.Unlock()
-
-		log.Printf("Cache cleaner finished - removed %d expired solution(s), %d remaining in cache\n", removed, remaining)
-	}
 }
 
 // Utility functions
@@ -206,7 +183,7 @@ func getEnvAsBool(key string, fallback bool) bool {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigins)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		if r.Method == http.MethodOptions {
