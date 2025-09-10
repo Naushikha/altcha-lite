@@ -19,6 +19,7 @@ import (
 
 var (
 	altchaHMACKey          = getEnv("ALTCHA_HMAC_KEY", "MY_ALTCHA_HMAC_KEY")
+	altchaComplexity       = getEnvAsInt("ALTCHA_COMPLEXITY", 500000)
 	serverPort             = getEnv("PORT", "3000")
 	expireTimeInMins       = getEnvAsInt("EXPIRE_TIME_IN_MINS", 5)
 	replayDetectionEnabled = getEnvAsBool("ENABLE_REPLAY_DETECTION", false)
@@ -101,7 +102,7 @@ func challengeHandler(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().Add(time.Duration(expireTimeInMins) * time.Minute)
 	challenge, err := altcha.CreateChallenge(altcha.ChallengeOptions{
 		HMACKey:   altchaHMACKey,
-		MaxNumber: 50000,
+		MaxNumber: int64(altchaComplexity),
 		Expires:   &expiresAt,
 	})
 	if err != nil {

@@ -8,6 +8,7 @@ services:
       - "3000:3000"
     environment:
       - ALTCHA_HMAC_KEY=MY_ALTCHA_HMAC_KEY
+      - ALTCHA_COMPLEXITY=500000
       - EXPIRE_TIME_IN_MINS=5
       - ENABLE_REPLAY_DETECTION=false
-      - CACHE_CLEAN_INTERVAL_MINS=15
+      - ALLOWED_ORIGINS=*
