@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Altcha Server Test</title>
+    <script
+      async
+      defer
+      src="https://cdn.jsdelivr.net/gh/altcha-org/altcha/dist/altcha.min.js"
+      type="module"
+    ></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 2em;
+        background: #f9f9f9;
+      }
+      h1 {
+        color: #333;
+      }
+      form {
+        margin-top: 2em;
+        background: #fff;
+        padding: 2em;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        max-width: 400px;
+      }
+      #result {
+        margin-top: 1em;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Test Altcha Server</h1>
+    <form id="altchaForm">
+      <altcha-widget
+        id="altcha"
+        challengeurl="http://localhost:3000/challenge"
+      ></altcha-widget>
+      <button type="submit">Submit</button>
+    </form>
+    <div id="result"></div>
+    <script>
+      const form = document.getElementById("altchaForm");
+      const resultDiv = document.getElementById("result");
+      let altchaPayload = "";
+
+      // Listen for statechange to get the payload when verified
+      document
+        .querySelector("#altcha")
+        .addEventListener("statechange", (ev) => {
+          console.log("state:", ev.detail.state);
+          if (ev.detail.state === "verified") {
+            altchaPayload = ev.detail.payload;
+            console.log("payload:", altchaPayload);
+          } else {
+            altchaPayload = "";
+          }
+        });
+
+      form.addEventListener("submit", async function (e) {
+        e.preventDefault();
+        resultDiv.textContent = "Verifying...";
+        if (!altchaPayload) {
+          resultDiv.textContent = "No Altcha payload found!";
+          return;
+        }
+        try {
+          const formData = new FormData();
+          formData.append("altcha", altchaPayload);
+          const res = await fetch("http://localhost:3000/verify", {
+            method: "POST",
+            body: formData,
+          });
+          const data = await res.json();
+          resultDiv.textContent = data.success
+            ? "Success!"
+            : "Failed: " + (data.message || "Unknown error");
+        } catch (err) {
+          resultDiv.textContent = "Error verifying: " + err;
+        }
+      });
+    </script>
+  </body>
+</html>
